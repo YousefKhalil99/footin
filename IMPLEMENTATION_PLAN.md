@@ -11,7 +11,9 @@ An AI agent that finds jobs → identifies hiring managers → researches them �
 | Layer | Tool | Why |
 |-------|------|-----|
 | **Frontend + API** | SvelteKit (existing) | Already set up, deploy to Vercel |
-| **Scraping** | Modal + Stagehand | ⭐ Sponsor tool! Python functions for web scraping |
+| **Job Scraping** | Apify | Pre-built scrapers for Greenhouse, Lever, etc. |
+| **People Finding** | Apollo.io API | Structured contact data + emails |
+| **Enrichment** | Browserbase + Stagehand | ⭐ Sponsor tool! News, blogs, Twitter |
 | **LLM** | OpenAI (gpt-4o-mini) | Cheap, fast, good enough |
 | **Observability** | **Weave (W&B)** | ⭐ Sponsor prize! Tracks learning loop |
 | **Database** | Supabase | Free, stores jobs/contacts/emails |
@@ -31,29 +33,31 @@ An AI agent that finds jobs → identifies hiring managers → researches them �
 │  └────────────┘  └─────┬──────┘  └────────────────────┘    │
 └────────────────────────┼────────────────────────────────────┘
                          │ calls
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│              MODAL (Python Functions)                        │
-│  ┌────────────────┐  ┌────────────────┐                     │
-│  │ job_scraper.py │  │ people_finder  │  ← Stagehand        │
-│  │ (Greenhouse,   │  │ .py (LinkedIn, │  ← Browserbase      │
-│  │  Lever, etc.)  │  │  team pages)   │                     │
-│  └───────┬────────┘  └───────┬────────┘                     │
-│          │                   │                               │
-│          └─────────┬─────────┘                               │
-│                    ▼                                         │
-│          ┌─────────────────┐                                 │
-│          │ @weave.op()     │ ← ALL calls traced              │
-│          │ decorators      │ ← Tactics tagged                │
-│          └─────────────────┘                                 │
-└─────────────────────────────────────────────────────────────┘
-                         │
-         ┌───────────────┼───────────────┐
-         ▼               ▼               ▼
-┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-│  Supabase   │  │   Weave     │  │   Resend    │
-│  (storage)  │  │  (traces)   │  │  (emails)   │
-└─────────────┘  └─────────────┘  └─────────────┘
+         ┌───────────────┼───────────────────────┐
+         ▼               ▼                       ▼
+┌─────────────┐  ┌─────────────┐  ┌────────────────────────┐
+│ Apify       │  │ Apollo.io   │  │ Browserbase + Stagehand│
+│             │  │ API         │  │ (Modal/Python)         │
+│ • Greenhouse│  │             │  │                        │
+│ • Lever     │  │ • Find      │  │ ENRICHER:              │
+│ • LinkedIn  │  │   people    │  │ • Company news/blogs   │
+│   Jobs     │  │ • Get       │  │ • Twitter/X profiles   │
+│             │  │   emails    │  │ • Personal websites    │
+│             │  │             │  │ • GitHub activity      │
+└─────────────┘  └─────────────┘  └─────────┬──────────────┘
+                                     │
+                                     ▼
+                         ┌─────────────────────┐
+                         │ @weave.op()         │ ← ALL calls traced
+                         │ decorators          │ ← Tactics tagged
+                         └─────────────────────┘
+                                     │
+         ┌───────────────────────────┼───────────────┐
+         ▼                           ▼               ▼
+┌─────────────┐             ┌─────────────┐  ┌─────────────┐
+│  Supabase   │             │   Weave     │  │   Resend    │
+│  (storage)  │             │  (traces)   │  │  (emails)   │
+└─────────────┘             └─────────────┘  └─────────────┘
 ```
 
 ---
@@ -76,10 +80,11 @@ footin/
 │       └── supabase.ts          # [NEW] DB client
 │
 ├── agent/                        # Python (Modal)
-│   ├── scraper.py               # Job discovery + people finder
-│   ├── enricher.py              # Profile research
+│   ├── apify_jobs.py            # Job discovery via Apify
+│   ├── apollo.py                # People finding via Apollo.io API
+│   ├── enricher.py              # Browserbase + Stagehand (news, blogs, Twitter)
 │   ├── learner.py               # Self-improvement logic
-│   └── requirements.txt         # weave, stagehand, modal
+│   └── requirements.txt         # weave, apify-client, modal
 │
 └── .env                          # API keys (gitignored)
 ```
@@ -90,9 +95,9 @@ footin/
 
 | Endpoint | Method | What It Does |
 |----------|--------|--------------|
-| `/api/discover` | POST | Triggers job scraping via Modal |
-| `/api/find-people` | POST | Finds hiring managers for a job |
-| `/api/enrich` | POST | Researches a contact's profile |
+| `/api/discover` | POST | Triggers job scraping via Apify |
+| `/api/find-people` | POST | Finds hiring managers via Apollo.io API |
+| `/api/enrich` | POST | Researches contact via Browserbase (news, blogs, Twitter) |
 | `/api/draft-email` | POST | Generates personalized email (OpenAI) |
 | `/api/send-email` | POST | Sends approved email (Resend) |
 | `/api/analytics` | GET | Returns tactic performance data |
@@ -236,12 +241,15 @@ SUPABASE_ANON_KEY=eyJ...
 # Weave (W&B)
 WANDB_API_KEY=...
 
-# Modal
-MODAL_TOKEN_ID=...
-MODAL_TOKEN_SECRET=...
+# Apify
+APIFY_API_TOKEN=...
 
 # Browserbase
 BROWSERBASE_API_KEY=...
+BROWSERBASE_PROJECT_ID=...
+
+# Apollo.io
+APOLLO_API_KEY=...
 
 # Resend
 RESEND_API_KEY=re_...
