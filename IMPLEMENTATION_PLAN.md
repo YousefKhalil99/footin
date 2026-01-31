@@ -41,7 +41,7 @@ An AI agent that finds jobs → identifies hiring managers → researches them �
 │ • Greenhouse│  │             │  │                        │
 │ • Lever     │  │ • Find      │  │ ENRICHER:              │
 │ • LinkedIn  │  │   people    │  │ • Company news/blogs   │
-│   Jobs     │  │ • Get       │  │ • Twitter/X profiles   │
+│   Jobs      │  │ • Get       │  │ • Twitter/X profiles   │
 │             │  │   emails    │  │ • Personal websites    │
 │             │  │             │  │ • GitHub activity      │
 └─────────────┘  └─────────────┘  └─────────┬──────────────┘
@@ -107,13 +107,31 @@ footin/
 ## Database Schema (Supabase)
 
 ```sql
--- Jobs found from scraping
+-- Jobs found from scraping (Apify schema)
 CREATE TABLE jobs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  company TEXT NOT NULL,
-  title TEXT NOT NULL,
-  description TEXT,
-  url TEXT,
+  job_id TEXT, -- Original ID from platform
+  job_title TEXT NOT NULL,
+  location TEXT,
+  salary_info TEXT,
+  posted_time TEXT,
+  published_at TIMESTAMPTZ,
+  search_string TEXT,
+  job_url TEXT,
+  company_name TEXT NOT NULL,
+  company_url TEXT,
+  company_logo TEXT,
+  job_description TEXT,
+  applications_count INT,
+  contract_type TEXT,
+  experience_level TEXT,
+  work_type TEXT,
+  sector TEXT,
+  poster_full_name TEXT,
+  poster_profile_url TEXT,
+  company_id TEXT,
+  apply_url TEXT,
+  apply_type TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
