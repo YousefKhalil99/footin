@@ -104,6 +104,12 @@ function formatDate(rssDate: string): string {
 }
 
 export const POST: RequestHandler = async ({ request }) => {
+    const modalUrl = env.MODAL_AGENT_URL;
+
+    if (!modalUrl) {
+        return json({ error: "MODAL_AGENT_URL is not configured" }, { status: 500 });
+    }
+
     let body: { companies?: string[] };
 
     try {
@@ -118,32 +124,34 @@ export const POST: RequestHandler = async ({ request }) => {
         return json({ error: "companies array is required" }, { status: 400 });
     }
 
-    const results: Record<string, EnrichmentResult> = {};
+    try {
+        const response = await fetch(`${modalUrl}/enrich`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ companies }),
+        });
 
-    // Fetch news for each company (in parallel)
-    await Promise.all(
-        companies.map(async (company) => {
-            const news = await fetchCompanyNews(company);
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`Modal Agent error: ${response.status}`, errorText);
+            throw new Error(`Agent failed: ${response.statusText}`);
+        }
 
-            results[company] = {
-                news,
-                x_profile: null, // X profile scraping requires Browserbase
-            };
-        })
-    );
+        const results = await response.json();
 
-    // Check if Browserbase is configured for advanced enrichment
-    const hasBrowserbase = Boolean(
-        env.BROWSERBASE_API_KEY &&
-        env.BROWSERBASE_PROJECT_ID &&
-        env.MODEL_API_KEY
-    );
-
-    return json({
-        results,
-        enrichment_level: hasBrowserbase ? "full" : "basic",
-        note: hasBrowserbase
-            ? "Full enrichment with X profiles available"
-            : "Basic enrichment (news only). Configure BROWSERBASE_API_KEY for X profile data.",
-    });
+        return json({
+            results,
+            enrichment_level: "full",
+            note: "Enrichment provided by Modal Agent",
+        });
+    } catch (error) {
+        console.error("Agent enrichment error:", error);
+        return json(
+            {
+                error: "Agent request failed",
+                details: error instanceof Error ? error.message : String(error),
+            },
+            { status: 502 }
+        );
+    }
 };

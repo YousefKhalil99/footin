@@ -206,9 +206,10 @@ async function upsertJobs(userId: string, items: ApifyItem[], searchParams: Apif
 }
 
 export const POST: RequestHandler = async ({ request }) => {
-	const apifyToken = env.APIFY_API_TOKEN;
-	if (!apifyToken) {
-		return json({ error: "APIFY_API_TOKEN is not configured" }, { status: 500 });
+	const modalUrl = env.MODAL_AGENT_URL;
+
+	if (!modalUrl) {
+		return json({ error: "MODAL_AGENT_URL is not configured" }, { status: 500 });
 	}
 
 	const sessionResult = await auth.api.getSession({ headers: request.headers });
@@ -219,60 +220,54 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ error: "Unauthorized" }, { status: 401 });
 	}
 
-	let body: ApifyInput;
+	let body: any;
 	try {
-		body = (await request.json()) as ApifyInput;
+		body = await request.json();
 	} catch {
 		return json({ error: "Invalid JSON body" }, { status: 400 });
 	}
 
 	const keywords = Array.isArray(body?.keyword)
-		? body.keyword.filter((value) => typeof value === "string" && value.trim())
+		? body.keyword.filter((value: any) => typeof value === "string" && value.trim())
 		: [];
 
 	if (!keywords.length) {
 		return json({ error: "keyword is required" }, { status: 400 });
 	}
 
-	const startUrls =
-		Array.isArray(body.startUrls) && body.startUrls.length
-			? body.startUrls
-			: [{ url: buildLinkedInSearchUrl(keywords[0], body.location, body.publishedAt) }];
-
-	const apifyInput: ApifyInput = {
-		startUrls,
-		keyword: keywords,
-		location: body.location,
-		publishedAt: body.publishedAt,
-		saveOnlyUniqueItems: body.saveOnlyUniqueItems ?? false,
-		enrichCompanyData: body.enrichCompanyData ?? false,
-		maxItems: 150 // Apify minimum
-	};
-
 	try {
-		// Initialize the ApifyClient
-		const client = new ApifyClient({ token: apifyToken });
+		// Call Modal agent for discovery
+		// Note: we're passing companies=[] for now as keywords are role titles
+		const response = await fetch(`${modalUrl}/discover`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				companies: [], // TODO: extract companies from keywords or separate field
+				roles: keywords,
+				max_results: 20
+			})
+		});
 
-		// Run the Actor and wait for it to finish
-		const run = await client.actor(LINKEDIN_SCRAPER_ACTOR_ID).call(apifyInput);
-
-		// Fetch results from the run's dataset
-		const { items } = await client.dataset(run.defaultDatasetId).listItems();
-
-		if (!Array.isArray(items)) {
-			return json({ error: "Unexpected Apify response" }, { status: 502 });
+		if (!response.ok) {
+			const errorText = await response.text();
+			console.error(`Modal Agent error: ${response.status}`, errorText);
+			throw new Error(`Agent failed: ${response.statusText}`);
 		}
 
-		const upserted = await upsertJobs(userId, items as ApifyItem[], apifyInput);
+		const items = await response.json();
+
+		const upserted = await upsertJobs(userId, items as any[], {
+			keyword: keywords
+		} as any);
 
 		return json({
 			inserted: upserted.count,
 			jobs: upserted.jobs
 		});
 	} catch (error) {
-		console.error("Apify error:", error);
+		console.error("Agent error:", error);
 		return json(
-			{ error: "Apify request failed", details: error instanceof Error ? error.message : String(error) },
+			{ error: "Agent request failed", details: error instanceof Error ? error.message : String(error) },
 			{ status: 502 }
 		);
 	}

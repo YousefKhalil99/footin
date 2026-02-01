@@ -155,11 +155,11 @@ function pickBestContacts(contacts: Contact[]): Contact[] {
 }
 
 export const POST: RequestHandler = async ({ request }) => {
-    const apiKey = env.HUNTER_API_KEY;
+    const modalUrl = env.MODAL_AGENT_URL;
 
-    if (!apiKey) {
+    if (!modalUrl) {
         return json(
-            { error: "HUNTER_API_KEY is not configured" },
+            { error: "MODAL_AGENT_URL is not configured" },
             { status: 500 }
         );
     }
@@ -178,32 +178,32 @@ export const POST: RequestHandler = async ({ request }) => {
         return json({ error: "companies array is required" }, { status: 400 });
     }
 
-    const departments = body.departments?.filter(Boolean) || ["it", "management", "sales"];
-    const results: Record<string, Contact[]> = {};
-
-    for (const company of companies) {
-        const domain = companyToDomain(company);
-        const allContacts: Contact[] = [];
-
-        // Search for executives and seniors across departments
-        for (const seniority of ["executive", "senior"]) {
-            for (const dept of departments.slice(0, 3)) {
-                const contacts = await searchHunter(apiKey, domain, dept, seniority);
-                allContacts.push(...contacts);
-            }
-        }
-
-        // Deduplicate by email
-        const seen = new Set<string>();
-        const unique = allContacts.filter((c) => {
-            if (!c.email || seen.has(c.email)) return false;
-            seen.add(c.email);
-            c.company = company; // Use original company name
-            return true;
+    try {
+        const response = await fetch(`${modalUrl}/find-people`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                companies,
+                departments: body.departments || ["it", "management", "sales"],
+            }),
         });
 
-        results[company] = pickBestContacts(unique);
-    }
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`Modal Agent error: ${response.status}`, errorText);
+            throw new Error(`Agent failed: ${response.statusText}`);
+        }
 
-    return json(results);
+        const results = await response.json();
+        return json(results);
+    } catch (error) {
+        console.error("Failed to connect to Modal agent:", error);
+        return json(
+            {
+                error: "Agent communication failed",
+                details: error instanceof Error ? error.message : String(error),
+            },
+            { status: 502 }
+        );
+    }
 };
