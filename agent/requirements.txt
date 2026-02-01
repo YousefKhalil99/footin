@@ -1,2 +1,5 @@
 requests>=2.28.0
 python-dotenv>=1.0.0
+stagehand>=0.3.0
+httpx>=0.24.0
+pydantic>=1.10.0
