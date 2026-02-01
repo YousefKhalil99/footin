@@ -535,9 +535,9 @@ def api():
             """
             import google.generativeai as genai
             
-            api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+            api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY") or os.environ.get("MODEL_API_KEY")
             if not api_key:
-                return json.dumps({"error": "GOOGLE_API_KEY or GEMINI_API_KEY not configured"})
+                return json.dumps({"error": "GOOGLE_API_KEY, GEMINI_API_KEY, or MODEL_API_KEY not configured"})
             
             genai.configure(api_key=api_key)
             model = genai.GenerativeModel("gemini-2.0-flash")
@@ -571,7 +571,9 @@ Respond with ONLY valid JSON in this exact format:
         tools_list = [discover_jobs_tool, find_contacts_tool, draft_email_tool]
         
         # Use Gemini instead of OpenAI
-        gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY") or os.environ.get("MODEL_API_KEY")
+        if not gemini_key:
+            raise HTTPException(status_code=500, detail="GOOGLE_API_KEY, GEMINI_API_KEY, or MODEL_API_KEY not configured in Modal secrets")
         llm = ChatGoogleGenerativeAI(
             model="gemini-2.0-flash",
             google_api_key=gemini_key,
