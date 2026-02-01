@@ -60,6 +60,11 @@ export const auth = betterAuth({
 	database: pool,
 	secret: BETTER_AUTH_SECRET,
 	baseURL: env.PUBLIC_URL || "http://localhost:5173",
+	trustedOrigins: [
+		"http://localhost:5173",
+		"https://footin-one.vercel.app",
+		"https://footin.vercel.app"
+	],
 	emailAndPassword: {
 		enabled: true
 	},
