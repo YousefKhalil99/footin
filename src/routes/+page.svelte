@@ -20,8 +20,9 @@
         JobCard,
         ContactCard,
     } from "$lib/components";
-    import { signOut } from "$lib/auth-client";
+    import { signOut, authClient } from "$lib/auth-client";
     import { goto } from "$app/navigation";
+    import { onMount } from "svelte";
     import {
         currentPhase,
         targetCompanies,
@@ -55,7 +56,19 @@
 
     // Auth state
     let session = $state<any>(null);
-    let isAuthLoading = $state(false);
+    let isAuthLoading = $state(true);
+
+    // Fetch session on mount
+    onMount(async () => {
+        try {
+            const { data } = await authClient.getSession();
+            session = data;
+        } catch (error) {
+            console.error("Failed to get session:", error);
+        } finally {
+            isAuthLoading = false;
+        }
+    });
 
     // Sign in handler - navigate to sign in page
     async function handleSignIn(): Promise<void> {
@@ -71,8 +84,7 @@
     async function handleSignOut(): Promise<void> {
         try {
             await signOut();
-            // Redirect to home after sign out
-            await goto("/");
+            session = null;
         } catch (error) {
             console.error("Sign out error:", error);
         }
@@ -168,16 +180,18 @@
         </div>
         <p class="tagline">AI-Powered Job Outreach Automation</p>
         <div class="header-actions">
-            {#if session?.user}
-                <span class="user-info">Welcome, {session.user?.name || session.user?.email}</span>
+            {#if isAuthLoading}
+                <span class="user-info">Loading...</span>
+            {:else if session?.user}
+                <span class="user-info">Welcome, {session.user.name || session.user.email}</span>
                 <Button variant="secondary" onclick={handleSignOut}>
                     Sign Out
                 </Button>
             {:else}
-                <Button variant="secondary" onclick={handleSignIn} disabled={isAuthLoading}>
+                <Button variant="secondary" onclick={handleSignIn}>
                     Sign In
                 </Button>
-                <Button variant="primary" onclick={handleSignUp} disabled={isAuthLoading}>
+                <Button variant="primary" onclick={handleSignUp}>
                     Sign Up
                 </Button>
             {/if}
