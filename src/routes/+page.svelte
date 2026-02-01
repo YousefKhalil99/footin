@@ -169,15 +169,25 @@
         <p class="tagline">AI-Powered Job Outreach Automation</p>
         <div class="header-actions">
             {#if session?.user}
-                <span class="user-info">Welcome, {session.user?.name || session.user?.email}</span>
+                <span class="user-info"
+                    >Welcome, {session.user?.name || session.user?.email}</span
+                >
                 <Button variant="secondary" onclick={handleSignOut}>
                     Sign Out
                 </Button>
             {:else}
-                <Button variant="secondary" onclick={handleSignIn} disabled={isAuthLoading}>
+                <Button
+                    variant="secondary"
+                    onclick={handleSignIn}
+                    disabled={isAuthLoading}
+                >
                     Sign In
                 </Button>
-                <Button variant="primary" onclick={handleSignUp} disabled={isAuthLoading}>
+                <Button
+                    variant="primary"
+                    onclick={handleSignUp}
+                    disabled={isAuthLoading}
+                >
                     Sign Up
                 </Button>
             {/if}
