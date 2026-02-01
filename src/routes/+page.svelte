@@ -384,22 +384,16 @@ Best regards`;
         </div>
         <p class="tagline">AI-Powered Job Outreach Automation</p>
         <div class="header-actions">
-<<<<<<< HEAD
-            {#if session?.user}
-                <span class="user-info"
-                    >Welcome, {session.user?.name || session.user?.email}</span
-                >
-=======
             {#if isAuthLoading}
                 <span class="user-info">Loading...</span>
             {:else if session?.user}
-                <span class="user-info">Welcome, {session.user.name || session.user.email}</span>
->>>>>>> 9b1d145e70d5f5b3f6969226a0fb326b964991ad
+                <span class="user-info"
+                    >Welcome, {session.user.name || session.user.email}</span
+                >
                 <Button variant="secondary" onclick={handleSignOut}>
                     Sign Out
                 </Button>
             {:else}
-<<<<<<< HEAD
                 <Button
                     variant="secondary"
                     onclick={handleSignIn}
@@ -412,12 +406,6 @@ Best regards`;
                     onclick={handleSignUp}
                     disabled={isAuthLoading}
                 >
-=======
-                <Button variant="secondary" onclick={handleSignIn}>
-                    Sign In
-                </Button>
-                <Button variant="primary" onclick={handleSignUp}>
->>>>>>> 9b1d145e70d5f5b3f6969226a0fb326b964991ad
                     Sign Up
                 </Button>
             {/if}
