@@ -12,7 +12,7 @@ An AI agent that finds jobs → identifies hiring managers → researches them �
 |-------|------|-----|
 | **Frontend + API** | SvelteKit (existing) | Already set up, deploy to Vercel |
 | **Job Scraping** | Apify | Pre-built scrapers for Greenhouse, Lever, etc. |
-| **People Finding** | Apollo.io API | Structured contact data + emails |
+| **People Finding** | Hunter.io API | Domain-based contact + email search |
 | **Enrichment** | Browserbase + Stagehand | ⭐ Sponsor tool! News, blogs, Twitter |
 | **LLM** | OpenAI (gpt-4o-mini) | Cheap, fast, good enough |
 | **Observability** | **Weave (W&B)** | ⭐ Sponsor prize! Tracks learning loop |
@@ -36,7 +36,7 @@ An AI agent that finds jobs → identifies hiring managers → researches them �
          ┌───────────────┼───────────────────────┐
          ▼               ▼                       ▼
 ┌─────────────┐  ┌─────────────┐  ┌────────────────────────┐
-│ Apify       │  │ Apollo.io   │  │ Browserbase + Stagehand│
+│ Apify       │  │ Hunter.io   │  │ Browserbase + Stagehand│
 │             │  │ API         │  │ (Modal/Python)         │
 │ • Greenhouse│  │             │  │                        │
 │ • Lever     │  │ • Find      │  │ ENRICHER:              │
@@ -81,7 +81,7 @@ footin/
 │
 ├── agent/                        # Python (Modal)
 │   ├── apify_jobs.py            # Job discovery via Apify
-│   ├── apollo.py                # People finding via Apollo.io API
+│   ├── hunter.py                # People finding via Hunter.io API
 │   ├── enricher.py              # Browserbase + Stagehand (news, blogs, Twitter)
 │   ├── learner.py               # Self-improvement logic
 │   └── requirements.txt         # weave, apify-client, modal
@@ -96,7 +96,7 @@ footin/
 | Endpoint | Method | What It Does |
 |----------|--------|--------------|
 | `/api/discover` | POST | Triggers job scraping via Apify |
-| `/api/find-people` | POST | Finds hiring managers via Apollo.io API |
+| `/api/find-people` | POST | Finds hiring managers via Hunter.io API |
 | `/api/enrich` | POST | Researches contact via Browserbase (news, blogs, Twitter) |
 | `/api/draft-email` | POST | Generates personalized email (OpenAI) |
 | `/api/send-email` | POST | Sends approved email (Resend) |
@@ -266,8 +266,8 @@ APIFY_API_TOKEN=...
 BROWSERBASE_API_KEY=...
 BROWSERBASE_PROJECT_ID=...
 
-# Apollo.io
-APOLLO_API_KEY=...
+# Hunter.io
+HUNTER_API_KEY=...
 
 # Resend
 RESEND_API_KEY=re_...

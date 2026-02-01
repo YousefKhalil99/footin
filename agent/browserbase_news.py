@@ -5,7 +5,7 @@ Uses Stagehand (AI-powered browser automation) to scrape:
 1. Company news from Google News (last 30 days)
 2. Company X (Twitter) profile information
 
-This runs in parallel with the Apollo contact search to enrich
+This runs in parallel with the Hunter.io contact search to enrich
 outreach emails with timely, relevant information.
 
 Usage:
