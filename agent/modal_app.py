@@ -1,7 +1,10 @@
 """
 Modal App: FootIn Agent API
 
-Exposes three HTTP endpoints for the job outreach automation pipeline:
+EXPOSES A TRUE AI AGENT:
+- POST /run - Give the agent a goal, it figures out what to do
+
+Also exposes legacy pipeline endpoints (for debugging):
 - POST /discover  - Find jobs via Apify LinkedIn Jobs Scraper
 - POST /find-people - Find contacts via Hunter.io
 - POST /enrich - Get company news/X profiles via Browserbase
@@ -27,6 +30,11 @@ image = (
         "python-dotenv>=1.0.0",
         "apify-client>=1.6.0",
         "stagehand>=0.3.0",
+        # LangGraph agent dependencies
+        "langgraph>=0.2.0",
+        "langchain-openai>=0.2.0",
+        "langchain-core>=0.3.0",
+        "openai>=1.0.0",
     )
 )
 
@@ -83,6 +91,18 @@ def api():
     class EnrichRequest(BaseModel):
         """Request body for profile enrichment."""
         companies: list[str]
+    
+    class AgentRequest(BaseModel):
+        """
+        Request body for the agent endpoint.
+        
+        Give the agent a natural language goal and it will figure out
+        which tools to use and in what order.
+        
+        Example:
+            {"goal": "Find PM jobs at Google and draft outreach emails"}
+        """
+        goal: str
     
     # =========================================
     # ENDPOINT: JOB DISCOVERY
@@ -359,6 +379,267 @@ def api():
                 results[company] = {"news": [], "x_profile": None}
         
         return results
+    
+    # =========================================
+    # ENDPOINT: AGENT (The True Agent!)
+    # =========================================
+    
+    @web_app.post("/run")
+    async def run_agent_endpoint(request: AgentRequest):
+        """
+        THE MAIN AGENT ENDPOINT.
+        
+        Give the agent a natural language goal, and it autonomously:
+        1. Reasons about what to do
+        2. Picks which tools to call
+        3. Executes them in the right order
+        4. Returns all results
+        
+        This is what makes FootIn a TRUE agent, not just a pipeline.
+        
+        Args:
+            request: Contains 'goal' - natural language description of what you want
+        
+        Returns:
+            Dictionary with:
+            - jobs: List of jobs found
+            - contacts: Dict of contacts per company
+            - enrichment: Company news/profiles
+            - drafts: Drafted emails
+            - reasoning: Agent's thought process
+        
+        Example:
+            POST /run
+            {"goal": "Find software engineer jobs at Anthropic and draft outreach emails to hiring managers"}
+        """
+        # Import the agent module
+        # Note: We import here to avoid issues with Modal's pickling
+        import json
+        from typing import TypedDict, Annotated, Sequence, Literal
+        from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, BaseMessage
+        from langchain_core.tools import tool
+        from langchain_openai import ChatOpenAI
+        from langgraph.graph import StateGraph, END
+        from langgraph.prebuilt import ToolNode
+        from langgraph.graph.message import add_messages
+        
+        # ---- AGENT STATE ----
+        class AgentState(TypedDict):
+            messages: Annotated[Sequence[BaseMessage], add_messages]
+            jobs: list
+            contacts: dict
+            enrichment: dict
+            drafts: list
+        
+        # ---- TOOLS ----
+        @tool
+        def discover_jobs_tool(companies: list[str], roles: list[str], max_results: int = 10) -> str:
+            """
+            Search for job postings at specific companies for specific roles.
+            Use this FIRST when the user wants to find jobs.
+            """
+            from apify_client import ApifyClient
+            
+            api_token = os.environ.get("APIFY_API_TOKEN")
+            if not api_token:
+                return json.dumps({"error": "APIFY_API_TOKEN not configured"})
+            
+            client = ApifyClient(api_token)
+            all_jobs = []
+            
+            for company in companies[:3]:
+                for role in roles[:2]:
+                    search_query = f"{role} at {company}"
+                    try:
+                        run_input = {
+                            "keywords": search_query,
+                            "location": "United States",
+                            "maxRows": min(5, max_results),
+                            "startPage": 1,
+                        }
+                        run = client.actor("curious_coder/linkedin-jobs-scraper").call(
+                            run_input=run_input, timeout_secs=120
+                        )
+                        for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+                            all_jobs.append({
+                                "id": item.get("jobId", str(hash(item.get("title", "")))[:9]),
+                                "company": item.get("companyName", company),
+                                "role": item.get("title", role),
+                                "location": item.get("location", "United States"),
+                                "type": item.get("contractType", "Full-time"),
+                                "summarizedJD": (item.get("description", "") or "")[:300] + "...",
+                                "postedDate": item.get("postedTime", "Recently"),
+                                "url": item.get("jobUrl"),
+                            })
+                    except Exception as e:
+                        print(f"Error: {e}")
+            
+            # Filter and dedupe
+            requested_lower = [c.lower() for c in companies]
+            filtered = [j for j in all_jobs if any(req in j["company"].lower() for req in requested_lower)]
+            seen = set()
+            unique = [j for j in filtered if not (j["id"] in seen or seen.add(j["id"]))]
+            return json.dumps(unique[:max_results])
+        
+        @tool
+        def find_contacts_tool(companies: list[str]) -> str:
+            """
+            Find hiring managers at companies using Hunter.io.
+            Use AFTER discovering jobs.
+            """
+            import requests as req
+            
+            api_key = os.environ.get("HUNTER_API_KEY")
+            if not api_key:
+                return json.dumps({"error": "HUNTER_API_KEY not configured"})
+            
+            known_domains = {
+                "google": "google.com", "meta": "meta.com", "openai": "openai.com",
+                "anthropic": "anthropic.com", "microsoft": "microsoft.com",
+            }
+            
+            def company_to_domain(company: str) -> str:
+                cl = company.lower().strip()
+                return known_domains.get(cl, f"{cl.replace(' ', '')}.com")
+            
+            results = {}
+            for company in companies[:3]:
+                domain = company_to_domain(company)
+                contacts = []
+                for seniority in ["executive", "senior"]:
+                    for dept in ["it", "management"]:
+                        try:
+                            resp = req.get("https://api.hunter.io/v2/domain-search", params={
+                                "domain": domain, "api_key": api_key, "type": "personal",
+                                "limit": 3, "department": dept, "seniority": seniority
+                            })
+                            resp.raise_for_status()
+                            for e in resp.json().get("data", {}).get("emails", []):
+                                contacts.append({
+                                    "name": f"{e.get('first_name', '')} {e.get('last_name', '')}".strip(),
+                                    "email": e.get("value"),
+                                    "title": e.get("position"),
+                                    "company": company,
+                                })
+                        except Exception as err:
+                            print(f"Hunter error: {err}")
+                seen = set()
+                results[company] = [c for c in contacts if c["email"] and not (c["email"] in seen or seen.add(c["email"]))][:3]
+            return json.dumps(results)
+        
+        @tool
+        def draft_email_tool(contact_name: str, contact_email: str, contact_title: str, company: str, job_role: str) -> str:
+            """
+            Draft a personalized outreach email to a contact.
+            Use AFTER finding contacts.
+            """
+            from openai import OpenAI
+            
+            api_key = os.environ.get("OPENAI_API_KEY")
+            if not api_key:
+                return json.dumps({"error": "OPENAI_API_KEY not configured"})
+            
+            client = OpenAI(api_key=api_key)
+            prompt = f"""Draft a short outreach email (under 100 words).
+TO: {contact_name} ({contact_title}) at {company}
+ABOUT: {job_role} position
+Be genuine, ask a specific question. Return JSON with subject, body, tactics."""
+            
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"}
+                )
+                result = json.loads(response.choices[0].message.content)
+                result["to"] = contact_email
+                result["contact_name"] = contact_name
+                return json.dumps(result)
+            except Exception as e:
+                return json.dumps({"error": str(e)})
+        
+        # ---- BUILD AGENT ----
+        tools_list = [discover_jobs_tool, find_contacts_tool, draft_email_tool]
+        
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0).bind_tools(tools_list)
+        tool_node = ToolNode(tools_list)
+        
+        def should_continue(state: AgentState) -> Literal["tools", "end"]:
+            last = state["messages"][-1]
+            if hasattr(last, "tool_calls") and last.tool_calls:
+                return "tools"
+            return "end"
+        
+        def call_model(state: AgentState) -> dict:
+            response = llm.invoke(state["messages"])
+            return {"messages": [response]}
+        
+        def update_state(state: AgentState) -> dict:
+            updates = {}
+            for msg in reversed(state["messages"]):
+                if isinstance(msg, ToolMessage):
+                    try:
+                        content = json.loads(msg.content)
+                        if isinstance(content, list) and content and "role" in content[0]:
+                            updates["jobs"] = state.get("jobs", []) + content
+                        elif isinstance(content, dict):
+                            if "subject" in content and "body" in content:
+                                updates["drafts"] = state.get("drafts", []) + [content]
+                            elif any(isinstance(v, list) for v in content.values()):
+                                existing = state.get("contacts", {})
+                                existing.update(content)
+                                updates["contacts"] = existing
+                    except:
+                        pass
+                    break
+            return updates
+        
+        # Build graph
+        workflow = StateGraph(AgentState)
+        workflow.add_node("agent", call_model)
+        workflow.add_node("tools", tool_node)
+        workflow.add_node("update", update_state)
+        workflow.set_entry_point("agent")
+        workflow.add_conditional_edges("agent", should_continue, {"tools": "tools", "end": END})
+        workflow.add_edge("tools", "update")
+        workflow.add_edge("update", "agent")
+        agent_graph = workflow.compile()
+        
+        # ---- RUN AGENT ----
+        system_prompt = """You are FootIn, an AI agent that helps users find jobs and draft outreach emails.
+
+Tools:
+1. discover_jobs_tool - Search for jobs at companies
+2. find_contacts_tool - Find hiring managers at companies
+3. draft_email_tool - Draft personalized outreach email
+
+Workflow: discover_jobs -> find_contacts -> draft_email (for each contact)
+
+Extract company names and roles from the goal. Be efficient."""
+
+        initial_state = {
+            "messages": [HumanMessage(content=system_prompt), HumanMessage(content=f"Goal: {request.goal}")],
+            "jobs": [], "contacts": {}, "enrichment": {}, "drafts": [],
+        }
+        
+        final_state = await agent_graph.ainvoke(initial_state)
+        
+        # Extract reasoning
+        reasoning = []
+        for msg in final_state["messages"]:
+            if isinstance(msg, AIMessage):
+                if msg.content:
+                    reasoning.append({"type": "thought", "content": msg.content})
+                if hasattr(msg, "tool_calls") and msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        reasoning.append({"type": "action", "tool": tc["name"], "args": tc["args"]})
+        
+        return {
+            "jobs": final_state.get("jobs", []),
+            "contacts": final_state.get("contacts", {}),
+            "drafts": final_state.get("drafts", []),
+            "reasoning": reasoning,
+        }
     
     # =========================================
     # HEALTH CHECK
