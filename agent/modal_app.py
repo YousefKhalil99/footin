@@ -148,10 +148,26 @@ def api():
                     # Continue with other searches even if one fails
                     continue
         
+        # Filter jobs to only include those from requested companies
+        # LinkedIn scraper returns keyword matches, so we need to verify company names
+        requested_companies_lower = [c.lower().strip() for c in request.companies]
+        
+        filtered_jobs = []
+        for job in all_jobs:
+            job_company = job.get("company", "").lower().strip()
+            # Check if job's company matches any of the requested companies
+            # Using partial match to handle variations like "Anthropic" vs "Anthropic, Inc."
+            is_match = any(
+                req_company in job_company or job_company in req_company
+                for req_company in requested_companies_lower
+            )
+            if is_match:
+                filtered_jobs.append(job)
+        
         # Remove duplicates by job ID
         seen_ids = set()
         unique_jobs = []
-        for job in all_jobs:
+        for job in filtered_jobs:
             if job["id"] not in seen_ids:
                 seen_ids.add(job["id"])
                 unique_jobs.append(job)
