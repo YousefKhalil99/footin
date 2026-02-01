@@ -9,7 +9,8 @@
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
+		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+		"db:init": "tsx scripts/init-db.ts"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-auto": "^7.0.0",
@@ -19,7 +20,12 @@
 		"svelte": "^5.48.2",
 		"svelte-check": "^4.3.5",
 		"tailwindcss": "^4.1.18",
-		"typescript": "^5.9.3",
+		"tsx": "^4.7.0",
 		"vite": "^7.3.1"
+	},
+	"dependencies": {
+		"@neondatabase/serverless": "^1.0.2",
+		"better-auth": "^1.4.18",
+		"dotenv": "^16.4.5"
 	}
 }

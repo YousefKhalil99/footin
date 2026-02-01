@@ -20,6 +20,8 @@
         JobCard,
         ContactCard,
     } from "$lib/components";
+    import { signOut } from "$lib/auth-client";
+    import { goto } from "$app/navigation";
     import {
         currentPhase,
         targetCompanies,
@@ -50,6 +52,31 @@
     // Local state for bound chip inputs
     let companies = $state<string[]>([]);
     let roles = $state<string[]>([]);
+
+    // Auth state
+    let session = $state<any>(null);
+    let isAuthLoading = $state(false);
+
+    // Sign in handler - navigate to sign in page
+    async function handleSignIn(): Promise<void> {
+        await goto("/auth/sign-in");
+    }
+
+    // Sign up handler - navigate to sign up page
+    async function handleSignUp(): Promise<void> {
+        await goto("/auth/sign-up");
+    }
+
+    // Sign out handler
+    async function handleSignOut(): Promise<void> {
+        try {
+            await signOut();
+            // Redirect to home after sign out
+            await goto("/");
+        } catch (error) {
+            console.error("Sign out error:", error);
+        }
+    }
 
     // Sync to stores when values change
     $effect(() => {
@@ -140,6 +167,21 @@
             <span class="logo-text">Foot<span class="accent">In</span></span>
         </div>
         <p class="tagline">AI-Powered Job Outreach Automation</p>
+        <div class="header-actions">
+            {#if session?.user}
+                <span class="user-info">Welcome, {session.user?.name || session.user?.email}</span>
+                <Button variant="secondary" onclick={handleSignOut}>
+                    Sign Out
+                </Button>
+            {:else}
+                <Button variant="secondary" onclick={handleSignIn} disabled={isAuthLoading}>
+                    Sign In
+                </Button>
+                <Button variant="primary" onclick={handleSignUp} disabled={isAuthLoading}>
+                    Sign Up
+                </Button>
+            {/if}
+        </div>
     </header>
 
     <ProgressStepper currentPhase={$currentPhase} />
@@ -419,6 +461,21 @@
         align-items: center;
         gap: 8px;
         padding: 24px 0 16px;
+        position: relative;
+    }
+
+    .header-actions {
+        position: absolute;
+        top: 24px;
+        right: 0;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+
+    .user-info {
+        font-size: 0.875rem;
+        color: var(--text-secondary);
     }
 
     .logo {
