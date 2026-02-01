@@ -20,8 +20,10 @@
         JobCard,
         ContactCard,
     } from "$lib/components";
-    import { signOut } from "$lib/auth-client";
+    import { signOut, authClient } from "$lib/auth-client";
     import { goto } from "$app/navigation";
+    import { onMount } from "svelte";
+    import { env } from "$env/dynamic/public";
     import {
         currentPhase,
         targetCompanies,
@@ -30,7 +32,6 @@
         selectedJobIds,
         contactsByJob,
         selectedContactIds,
-        canSearch,
         canExtract,
         selectedJobs,
         nextPhase,
@@ -52,10 +53,26 @@
     // Local state for bound chip inputs
     let companies = $state<string[]>([]);
     let roles = $state<string[]>([]);
+    const canSearchLocal = $derived(companies.length > 0 && roles.length > 0);
+
+    // Check if we should use mock data (default to true for development)
+    const useMockData = env.PUBLIC_USE_MOCK_DATA !== "false";
 
     // Auth state
     let session = $state<any>(null);
-    let isAuthLoading = $state(false);
+    let isAuthLoading = $state(true);
+
+    // Fetch session on mount
+    onMount(async () => {
+        try {
+            const { data } = await authClient.getSession();
+            session = data;
+        } catch (error) {
+            console.error("Failed to get session:", error);
+        } finally {
+            isAuthLoading = false;
+        }
+    });
 
     // Sign in handler - navigate to sign in page
     async function handleSignIn(): Promise<void> {
@@ -71,8 +88,7 @@
     async function handleSignOut(): Promise<void> {
         try {
             await signOut();
-            // Redirect to home after sign out
-            await goto("/");
+            session = null;
         } catch (error) {
             console.error("Sign out error:", error);
         }
@@ -87,24 +103,123 @@
         targetRoles.set(roles);
     });
 
+    // Track if we're showing cached results
+    let showingCachedResults = $state(false);
+
     /**
-     * Handle search button click - start processing phase
+     * Transform API job data to Job format
+     */
+    function transformJobData(job: any): Job {
+        return {
+            id: job.id,
+            company: job.company_name || "Unknown",
+            role: job.title,
+            location: job.location || "Not specified",
+            type: "Full-time",
+            summarizedJD: job.description || "No description available",
+            postedDate: job.published_at || "Recently",
+            salary: job.salary_info || undefined,
+        };
+    }
+
+    /**
+     * Handle search button click - check for cached jobs first
      */
     async function handleSearch(): Promise<void> {
-        if (!$canSearch) return;
+        if (!canSearchLocal) return;
+
+        // Sync current inputs to stores
+        targetCompanies.set(companies);
+        targetRoles.set(roles);
 
         // Move to processing phase
         goToPhase(PHASES.PROCESSING);
 
-        // Simulate job search delay
-        await simulateJobSearch();
+        let jobs: Job[] = [];
 
-        // Generate mock jobs based on inputs
-        const jobs = generateMockJobs($targetCompanies, $targetRoles);
-        discoveredJobs.set(jobs);
+        try {
+            if (useMockData) {
+                // Simulate job search delay
+                await simulateJobSearch();
+                // Generate mock jobs based on inputs
+                jobs = generateMockJobs(companies, roles);
+                showingCachedResults = false;
+            } else {
+                // First, check for existing jobs in the database
+                const params = new URLSearchParams();
+                roles.forEach((role) => params.append("keyword", role));
 
-        // Move to discovery phase
-        goToPhase(PHASES.DISCOVERY);
+                const cachedResponse = await fetch(
+                    `/api/jobs?${params.toString()}`,
+                );
+                const cachedData = await cachedResponse.json();
+
+                if (
+                    cachedResponse.ok &&
+                    cachedData.jobs &&
+                    cachedData.jobs.length > 0
+                ) {
+                    // We have cached results, use them
+                    jobs = cachedData.jobs.map(transformJobData);
+                    showingCachedResults = true;
+                } else {
+                    // No cached results, run fresh search
+                    await runFreshSearch();
+                    return;
+                }
+            }
+
+            discoveredJobs.set(jobs);
+
+            // Move to discovery phase
+            goToPhase(PHASES.DISCOVERY);
+        } catch (error) {
+            console.error("Search failed:", error);
+            alert(
+                `Search failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+            );
+            goToPhase(PHASES.TARGETING);
+        }
+    }
+
+    /**
+     * Run a fresh search from Apify (scrape new jobs)
+     */
+    async function runFreshSearch(): Promise<void> {
+        // Move to processing phase
+        goToPhase(PHASES.PROCESSING);
+        showingCachedResults = false;
+
+        try {
+            const response = await fetch("/api/discover", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    keyword: roles.length > 0 ? roles : $targetRoles,
+                    location: "Remote", // TODO: make this configurable
+                    publishedAt: "r86400", // Last 24 hours
+                }),
+            });
+            const data = await response.json();
+            if (!response.ok || data.error) {
+                console.error("API error:", data.error || response.statusText);
+                throw new Error(data.error || "Failed to fetch jobs");
+            }
+
+            // Transform API response to Job format
+            const jobs = (data.jobs || []).map(transformJobData);
+
+            discoveredJobs.set(jobs);
+
+            // Move to discovery phase
+            goToPhase(PHASES.DISCOVERY);
+        } catch (error) {
+            console.error("Fresh search failed:", error);
+            alert(
+                `Search failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+            );
+            goToPhase(PHASES.TARGETING);
+        }
     }
 
     /**
@@ -116,24 +231,125 @@
         // Move to extraction phase
         goToPhase(PHASES.EXTRACTION);
 
-        // Simulate AI extraction delay
-        await simulateAIExtraction();
-
-        // Generate contacts for each selected job
         const contactsMap = new Map<string, Contact[]>();
-        $selectedJobs.forEach((job) => {
-            const contacts = generateMockContacts(job);
-            contactsMap.set(job.id, contacts);
 
-            // Auto-select all contacts by default
-            contacts.forEach((c) => {
-                selectedContactIds.update((ids) => {
-                    const newIds = new Set(ids);
-                    newIds.add(c.id);
-                    return newIds;
+        if (useMockData) {
+            // Simulate AI extraction delay
+            await simulateAIExtraction();
+
+            // Generate contacts for each selected job
+            $selectedJobs.forEach((job) => {
+                const contacts = generateMockContacts(job);
+                contactsMap.set(job.id, contacts);
+
+                // Auto-select all contacts by default
+                contacts.forEach((c) => {
+                    selectedContactIds.update((ids) => {
+                        const newIds = new Set(ids);
+                        newIds.add(c.id);
+                        return newIds;
+                    });
                 });
             });
-        });
+        } else {
+            // Use Hunter.io API for contact extraction
+            try {
+                // Get unique company names from selected jobs
+                const companyNames = [
+                    ...new Set($selectedJobs.map((job) => job.company)),
+                ];
+
+                const response = await fetch("/api/find-people", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        companies: companyNames,
+                        departments: ["it", "management", "sales"],
+                    }),
+                });
+
+                if (!response.ok) {
+                    throw new Error("Failed to fetch contacts");
+                }
+
+                const contactsByCompany = await response.json();
+
+                // Map contacts back to jobs
+                $selectedJobs.forEach((job) => {
+                    const companyContacts =
+                        contactsByCompany[job.company] || [];
+
+                    // Transform Hunter contacts to our Contact format
+                    const contacts: Contact[] = companyContacts.map(
+                        (c: any, index: number) => {
+                            const source:
+                                | "Hiring Manager"
+                                | "Team Lead"
+                                | "Peer" =
+                                c.seniority === "executive"
+                                    ? "Hiring Manager"
+                                    : c.seniority === "senior"
+                                      ? "Team Lead"
+                                      : "Peer";
+
+                            // Generate personalized email
+                            const firstName = c.name?.split(" ")[0] || "there";
+                            const emailSubject = `${job.role} opportunity at ${job.company} — Quick intro`;
+                            const draftedEmail = `Hi ${firstName},
+
+I came across the ${job.role} position at ${job.company} and believe my background could be a strong fit.
+
+I noticed your work as ${c.title || "a leader"} at ${job.company} and would love to learn more about what your team is working on.
+
+Would you be open to a brief 15-minute chat next week?
+
+Best regards`;
+
+                            return {
+                                id: `${job.id}-${index}`,
+                                jobId: job.id,
+                                name: c.name || "Unknown",
+                                title: c.title || c.seniority || "Team Member",
+                                source,
+                                linkedInActivity: c.linkedin_url
+                                    ? "LinkedIn profile available"
+                                    : "No recent activity found",
+                                emailSubject,
+                                draftedEmail,
+                            };
+                        },
+                    );
+
+                    if (contacts.length > 0) {
+                        contactsMap.set(job.id, contacts);
+
+                        // Auto-select all contacts
+                        contacts.forEach((c) => {
+                            selectedContactIds.update((ids) => {
+                                const newIds = new Set(ids);
+                                newIds.add(c.id);
+                                return newIds;
+                            });
+                        });
+                    }
+                });
+            } catch (error) {
+                console.error("Contact extraction failed:", error);
+                // Fall back to mock data on error
+                $selectedJobs.forEach((job) => {
+                    const contacts = generateMockContacts(job);
+                    contactsMap.set(job.id, contacts);
+                    contacts.forEach((c) => {
+                        selectedContactIds.update((ids) => {
+                            const newIds = new Set(ids);
+                            newIds.add(c.id);
+                            return newIds;
+                        });
+                    });
+                });
+            }
+        }
+
         contactsByJob.set(contactsMap);
 
         // Move to outreach phase
@@ -230,7 +446,7 @@
                     <div class="form-actions">
                         <Button
                             variant="primary"
-                            disabled={!$canSearch}
+                            disabled={!canSearchLocal}
                             onclick={handleSearch}
                         >
                             <svg
@@ -281,13 +497,35 @@
                     </h1>
                     <p class="phase-description">
                         {#if $currentPhase === PHASES.DISCOVERY}
-                            We found {$discoveredJobs.length} matching opportunities.
+                            {#if showingCachedResults}
+                                Showing {$discoveredJobs.length} saved jobs from
+                                previous searches.
+                            {:else}
+                                We found {$discoveredJobs.length} matching opportunities.
+                            {/if}
                             Review and select the ones you'd like to pursue.
                         {:else}
                             You've selected {$selectedJobIds.size} job(s). Ready
                             to find contacts?
                         {/if}
                     </p>
+                    {#if showingCachedResults && !useMockData}
+                        <Button variant="secondary" onclick={runFreshSearch}>
+                            <svg
+                                width="16"
+                                height="16"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                            >
+                                <path
+                                    d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"
+                                />
+                            </svg>
+                            Run Fresh Search
+                        </Button>
+                    {/if}
                 </div>
 
                 <div class="jobs-grid">
