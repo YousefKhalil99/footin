@@ -30,11 +30,11 @@ image = (
         "python-dotenv>=1.0.0",
         "apify-client>=1.6.0",
         "stagehand>=0.3.0",
-        # LangGraph agent dependencies
+        # LangGraph agent dependencies (using Gemini)
         "langgraph>=0.2.0",
-        "langchain-openai>=0.2.0",
+        "langchain-google-genai>=2.0.0",
         "langchain-core>=0.3.0",
-        "openai>=1.0.0",
+        "google-generativeai>=0.8.0",
     )
 )
 
@@ -418,7 +418,7 @@ def api():
         from typing import TypedDict, Annotated, Sequence, Literal
         from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, BaseMessage
         from langchain_core.tools import tool
-        from langchain_openai import ChatOpenAI
+        from langchain_google_genai import ChatGoogleGenerativeAI
         from langgraph.graph import StateGraph, END
         from langgraph.prebuilt import ToolNode
         from langgraph.graph.message import add_messages
@@ -533,25 +533,34 @@ def api():
             Draft a personalized outreach email to a contact.
             Use AFTER finding contacts.
             """
-            from openai import OpenAI
+            import google.generativeai as genai
             
-            api_key = os.environ.get("OPENAI_API_KEY")
+            api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
             if not api_key:
-                return json.dumps({"error": "OPENAI_API_KEY not configured"})
+                return json.dumps({"error": "GOOGLE_API_KEY or GEMINI_API_KEY not configured"})
             
-            client = OpenAI(api_key=api_key)
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel("gemini-2.0-flash")
+            
             prompt = f"""Draft a short outreach email (under 100 words).
 TO: {contact_name} ({contact_title}) at {company}
 ABOUT: {job_role} position
-Be genuine, ask a specific question. Return JSON with subject, body, tactics."""
+Be genuine, ask a specific question.
+
+Respond with ONLY valid JSON in this exact format:
+{{"subject": "...", "body": "...", "tactics": ["tactic1", "tactic2"]}}"""
             
             try:
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    response_format={"type": "json_object"}
-                )
-                result = json.loads(response.choices[0].message.content)
+                response = model.generate_content(prompt)
+                # Parse JSON from response
+                text = response.text.strip()
+                # Handle markdown code blocks if present
+                if text.startswith("```"):
+                    text = text.split("```")[1]
+                    if text.startswith("json"):
+                        text = text[4:]
+                    text = text.strip()
+                result = json.loads(text)
                 result["to"] = contact_email
                 result["contact_name"] = contact_name
                 return json.dumps(result)
@@ -561,7 +570,13 @@ Be genuine, ask a specific question. Return JSON with subject, body, tactics."""
         # ---- BUILD AGENT ----
         tools_list = [discover_jobs_tool, find_contacts_tool, draft_email_tool]
         
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0).bind_tools(tools_list)
+        # Use Gemini instead of OpenAI
+        gemini_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.0-flash",
+            google_api_key=gemini_key,
+            temperature=0,
+        ).bind_tools(tools_list)
         tool_node = ToolNode(tools_list)
         
         def should_continue(state: AgentState) -> Literal["tools", "end"]:
