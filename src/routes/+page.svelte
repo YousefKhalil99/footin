@@ -20,8 +20,10 @@
         JobCard,
         ContactCard,
     } from "$lib/components";
-    import { signOut } from "$lib/auth-client";
+    import { signOut, authClient } from "$lib/auth-client";
     import { goto } from "$app/navigation";
+    import { onMount } from "svelte";
+    import { env } from "$env/dynamic/public";
     import {
         currentPhase,
         targetCompanies,
@@ -30,7 +32,6 @@
         selectedJobIds,
         contactsByJob,
         selectedContactIds,
-        canSearch,
         canExtract,
         selectedJobs,
         nextPhase,
@@ -52,10 +53,26 @@
     // Local state for bound chip inputs
     let companies = $state<string[]>([]);
     let roles = $state<string[]>([]);
+    const canSearchLocal = $derived(companies.length > 0 && roles.length > 0);
+
+    // Check if we should use mock data (default to true for development)
+    const useMockData = env.PUBLIC_USE_MOCK_DATA !== "false";
 
     // Auth state
     let session = $state<any>(null);
-    let isAuthLoading = $state(false);
+    let isAuthLoading = $state(true);
+
+    // Fetch session on mount
+    onMount(async () => {
+        try {
+            const { data } = await authClient.getSession();
+            session = data;
+        } catch (error) {
+            console.error("Failed to get session:", error);
+        } finally {
+            isAuthLoading = false;
+        }
+    });
 
     // Sign in handler - navigate to sign in page
     async function handleSignIn(): Promise<void> {
@@ -71,8 +88,7 @@
     async function handleSignOut(): Promise<void> {
         try {
             await signOut();
-            // Redirect to home after sign out
-            await goto("/");
+            session = null;
         } catch (error) {
             console.error("Sign out error:", error);
         }
@@ -87,24 +103,113 @@
         targetRoles.set(roles);
     });
 
+    // Track if we're showing cached results
+    let showingCachedResults = $state(false);
+
     /**
-     * Handle search button click - start processing phase
+     * Transform API job data to Job format
+     */
+    function transformJobData(job: any): Job {
+        return {
+            id: job.id,
+            company: job.company_name || "Unknown",
+            role: job.title,
+            location: job.location || "Not specified",
+            type: "Full-time",
+            summarizedJD: job.description || "No description available",
+            postedDate: job.published_at || "Recently",
+            salary: job.salary_info || undefined
+        };
+    }
+
+    /**
+     * Handle search button click - check for cached jobs first
      */
     async function handleSearch(): Promise<void> {
-        if (!$canSearch) return;
+        if (!canSearchLocal) return;
+
+        // Sync current inputs to stores
+        targetCompanies.set(companies);
+        targetRoles.set(roles);
 
         // Move to processing phase
         goToPhase(PHASES.PROCESSING);
 
-        // Simulate job search delay
-        await simulateJobSearch();
+        let jobs: Job[] = [];
 
-        // Generate mock jobs based on inputs
-        const jobs = generateMockJobs($targetCompanies, $targetRoles);
-        discoveredJobs.set(jobs);
+        try {
+            if (useMockData) {
+                // Simulate job search delay
+                await simulateJobSearch();
+                // Generate mock jobs based on inputs
+                jobs = generateMockJobs(companies, roles);
+                showingCachedResults = false;
+            } else {
+                // First, check for existing jobs in the database
+                const params = new URLSearchParams();
+                roles.forEach(role => params.append("keyword", role));
 
-        // Move to discovery phase
-        goToPhase(PHASES.DISCOVERY);
+                const cachedResponse = await fetch(`/api/jobs?${params.toString()}`);
+                const cachedData = await cachedResponse.json();
+
+                if (cachedResponse.ok && cachedData.jobs && cachedData.jobs.length > 0) {
+                    // We have cached results, use them
+                    jobs = cachedData.jobs.map(transformJobData);
+                    showingCachedResults = true;
+                } else {
+                    // No cached results, run fresh search
+                    await runFreshSearch();
+                    return;
+                }
+            }
+
+            discoveredJobs.set(jobs);
+
+            // Move to discovery phase
+            goToPhase(PHASES.DISCOVERY);
+        } catch (error) {
+            console.error("Search failed:", error);
+            alert(`Search failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+            goToPhase(PHASES.TARGETING);
+        }
+    }
+
+    /**
+     * Run a fresh search from Apify (scrape new jobs)
+     */
+    async function runFreshSearch(): Promise<void> {
+        // Move to processing phase
+        goToPhase(PHASES.PROCESSING);
+        showingCachedResults = false;
+
+        try {
+            const response = await fetch("/api/discover", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    keyword: roles.length > 0 ? roles : $targetRoles,
+                    location: "Remote", // TODO: make this configurable
+                    publishedAt: "r86400" // Last 24 hours
+                })
+            });
+            const data = await response.json();
+            if (!response.ok || data.error) {
+                console.error("API error:", data.error || response.statusText);
+                throw new Error(data.error || "Failed to fetch jobs");
+            }
+
+            // Transform API response to Job format
+            const jobs = (data.jobs || []).map(transformJobData);
+
+            discoveredJobs.set(jobs);
+
+            // Move to discovery phase
+            goToPhase(PHASES.DISCOVERY);
+        } catch (error) {
+            console.error("Fresh search failed:", error);
+            alert(`Search failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+            goToPhase(PHASES.TARGETING);
+        }
     }
 
     /**
@@ -116,24 +221,33 @@
         // Move to extraction phase
         goToPhase(PHASES.EXTRACTION);
 
-        // Simulate AI extraction delay
-        await simulateAIExtraction();
-
-        // Generate contacts for each selected job
         const contactsMap = new Map<string, Contact[]>();
-        $selectedJobs.forEach((job) => {
-            const contacts = generateMockContacts(job);
-            contactsMap.set(job.id, contacts);
 
-            // Auto-select all contacts by default
-            contacts.forEach((c) => {
-                selectedContactIds.update((ids) => {
-                    const newIds = new Set(ids);
-                    newIds.add(c.id);
-                    return newIds;
+        if (useMockData) {
+            // Simulate AI extraction delay
+            await simulateAIExtraction();
+
+            // Generate contacts for each selected job
+            $selectedJobs.forEach((job) => {
+                const contacts = generateMockContacts(job);
+                contactsMap.set(job.id, contacts);
+
+                // Auto-select all contacts by default
+                contacts.forEach((c) => {
+                    selectedContactIds.update((ids) => {
+                        const newIds = new Set(ids);
+                        newIds.add(c.id);
+                        return newIds;
+                    });
                 });
             });
-        });
+        } else {
+            // Real API for contact extraction not yet implemented
+            alert("Contact extraction API is not yet implemented. Please enable mock data (PUBLIC_USE_MOCK_DATA=true) or wait for the Apollo.io integration.");
+            goToPhase(PHASES.SELECTION);
+            return;
+        }
+
         contactsByJob.set(contactsMap);
 
         // Move to outreach phase
@@ -168,26 +282,18 @@
         </div>
         <p class="tagline">AI-Powered Job Outreach Automation</p>
         <div class="header-actions">
-            {#if session?.user}
-                <span class="user-info"
-                    >Welcome, {session.user?.name || session.user?.email}</span
-                >
+            {#if isAuthLoading}
+                <span class="user-info">Loading...</span>
+            {:else if session?.user}
+                <span class="user-info">Welcome, {session.user.name || session.user.email}</span>
                 <Button variant="secondary" onclick={handleSignOut}>
                     Sign Out
                 </Button>
             {:else}
-                <Button
-                    variant="secondary"
-                    onclick={handleSignIn}
-                    disabled={isAuthLoading}
-                >
+                <Button variant="secondary" onclick={handleSignIn}>
                     Sign In
                 </Button>
-                <Button
-                    variant="primary"
-                    onclick={handleSignUp}
-                    disabled={isAuthLoading}
-                >
+                <Button variant="primary" onclick={handleSignUp}>
                     Sign Up
                 </Button>
             {/if}
@@ -230,7 +336,7 @@
                     <div class="form-actions">
                         <Button
                             variant="primary"
-                            disabled={!$canSearch}
+                            disabled={!canSearchLocal}
                             onclick={handleSearch}
                         >
                             <svg
@@ -281,13 +387,28 @@
                     </h1>
                     <p class="phase-description">
                         {#if $currentPhase === PHASES.DISCOVERY}
-                            We found {$discoveredJobs.length} matching opportunities.
+                            {#if showingCachedResults}
+                                Showing {$discoveredJobs.length} saved jobs from previous searches.
+                            {:else}
+                                We found {$discoveredJobs.length} matching opportunities.
+                            {/if}
                             Review and select the ones you'd like to pursue.
                         {:else}
                             You've selected {$selectedJobIds.size} job(s). Ready
                             to find contacts?
                         {/if}
                     </p>
+                    {#if showingCachedResults && !useMockData}
+                        <Button
+                            variant="secondary"
+                            onclick={runFreshSearch}
+                        >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+                            </svg>
+                            Run Fresh Search
+                        </Button>
+                    {/if}
                 </div>
 
                 <div class="jobs-grid">

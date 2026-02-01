@@ -30,7 +30,6 @@
   }: Props = $props();
 
   let inputValue = $state('');
-  let inputElement: HTMLInputElement;
   let isFocused = $state(false);
 
   // Computed: whether we've reached the max limit
@@ -74,12 +73,12 @@
 </script>
 
 <div class="chip-input-container">
-  <label class="chip-label">
+  <div class="chip-label">
     {label}
     <span class="chip-count" class:at-limit={isMaxReached}>
       {chips.length}/{maxChips}
     </span>
-  </label>
+  </div>
   
   <div 
     class="chip-input-wrapper"
@@ -113,14 +112,13 @@
     <!-- Input field -->
     {#if !isMaxReached}
       <input
-        bind:this={inputElement}
         bind:value={inputValue}
         type="text"
         {placeholder}
         class="chip-input"
         onkeydown={handleKeydown}
         onfocus={() => isFocused = true}
-        onblur={() => isFocused = false}
+        onblur={() => { addChip(); isFocused = false; }}
       />
     {:else}
       <span class="max-reached-text">Maximum reached</span>

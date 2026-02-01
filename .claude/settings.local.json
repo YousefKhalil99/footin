@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(npm install)",
-      "Bash(npm run db:init:*)"
+      "Bash(npm run db:init:*)",
+      "Bash(npm install:*)"
     ]
   }
 }
