@@ -23,6 +23,10 @@ async function initDatabase() {
 	const client = await pool.connect();
 
 	try {
+		// Ensure pgcrypto extension for UUID generation
+		await client.query('CREATE EXTENSION IF NOT EXISTS "pgcrypto"');
+		console.log("✓ Ensured pgcrypto extension");
+
 		// Create neon_auth schema if it doesn't exist
 		await client.query("CREATE SCHEMA IF NOT EXISTS neon_auth");
 		console.log("✓ Created 'neon_auth' schema");
@@ -95,6 +99,38 @@ async function initDatabase() {
 			)
 		`);
 		console.log("✓ Created 'neon_auth.verification' table");
+
+		// Create application tables in public schema
+		await client.query(`
+			CREATE TABLE IF NOT EXISTS public.jobs (
+				id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+				user_id TEXT NOT NULL REFERENCES neon_auth."user"(id) ON DELETE CASCADE,
+				source TEXT NOT NULL,
+				source_job_key TEXT NOT NULL,
+				source_job_id TEXT,
+				title TEXT NOT NULL,
+				company_name TEXT,
+				location TEXT,
+				job_url TEXT,
+				apply_url TEXT,
+				published_at TIMESTAMPTZ,
+				description TEXT,
+				raw JSONB NOT NULL,
+				search_params JSONB NOT NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				CONSTRAINT jobs_user_source_key_unique UNIQUE (user_id, source, source_job_key)
+			)
+		`);
+		console.log("✓ Created 'public.jobs' table");
+
+		await client.query(
+			"CREATE INDEX IF NOT EXISTS jobs_user_id_idx ON public.jobs (user_id)"
+		);
+		await client.query(
+			"CREATE INDEX IF NOT EXISTS jobs_published_at_idx ON public.jobs (published_at)"
+		);
+		console.log("✓ Created jobs indexes");
 
 		console.log("\n✅ Database schema initialized successfully in neon_auth schema!");
 	} catch (error) {
