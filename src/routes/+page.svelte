@@ -252,11 +252,7 @@
                 });
             });
         } else {
-<<<<<<< Updated upstream
-            // Use Hunter.io API for contact extraction
-=======
             // Use Hunter.io API for contact extraction via Modal agent
->>>>>>> Stashed changes
             try {
                 // Get unique company names from selected jobs
                 const companyNames = [
@@ -273,14 +269,10 @@
                 });
 
                 if (!response.ok) {
-<<<<<<< Updated upstream
-                    throw new Error("Failed to fetch contacts");
-=======
                     const errorData = await response.json().catch(() => ({}));
                     throw new Error(
                         errorData.error || "Failed to fetch contacts",
                     );
->>>>>>> Stashed changes
                 }
 
                 const contactsByCompany = await response.json();
@@ -347,12 +339,9 @@ Best regards`;
             } catch (error) {
                 console.error("Contact extraction failed:", error);
                 // Fall back to mock data on error
-<<<<<<< Updated upstream
-=======
                 alert(
                     `Contact extraction encountered an error: ${error instanceof Error ? error.message : "Unknown error"}. Using mock data instead.`,
                 );
->>>>>>> Stashed changes
                 $selectedJobs.forEach((job) => {
                     const contacts = generateMockContacts(job);
                     contactsMap.set(job.id, contacts);
