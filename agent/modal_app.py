@@ -5,7 +5,7 @@ EXPOSES A TRUE AI AGENT:
 - POST /run - Give the agent a goal, it figures out what to do
 
 Also exposes legacy pipeline endpoints (for debugging):
-- POST /discover  - Find jobs via Apify LinkedIn Jobs Scraper
+- POST /discover  - Find jobs via Browserbase (scrapes company career pages)
 - POST /find-people - Find contacts via Hunter.io
 - POST /enrich - Get company news/X profiles via Browserbase
 
@@ -28,7 +28,6 @@ image = (
         "httpx>=0.24.0",
         "pydantic>=2.0.0",
         "python-dotenv>=1.0.0",
-        "apify-client>=1.6.0",
         "stagehand>=0.3.0",
         # LangGraph agent dependencies (using Gemini)
         "langgraph>=0.2.0",
@@ -36,11 +35,11 @@ image = (
         "langchain-core>=0.3.0",
         "google-generativeai>=0.8.0",
     )
+    .add_local_dir(".", remote_path="/root")
 )
 
 # Secrets from Modal dashboard (set these at modal.com/secrets)
-# Required: HUNTER_API_KEY, APIFY_API_TOKEN
-# Optional for enrichment: BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID, MODEL_API_KEY
+# Required: HUNTER_API_KEY, BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID, MODEL_API_KEY
 
 
 @app.function(
@@ -111,7 +110,10 @@ def api():
     @web_app.post("/discover")
     async def discover_jobs(request: DiscoverRequest):
         """
-        Find jobs matching companies and roles via Apify LinkedIn Jobs Scraper.
+        Find jobs matching companies and roles via Browserbase.
+        
+        Visits each company's official careers page and extracts
+        job listings that match the requested roles.
         
         Args:
             request: Companies and roles to search for
@@ -119,80 +121,36 @@ def api():
         Returns:
             List of job objects with id, company, role, location, etc.
         """
-        from apify_client import ApifyClient
+        # Check for required Browserbase credentials
+        browserbase_key = os.environ.get("BROWSERBASE_API_KEY")
+        browserbase_project = os.environ.get("BROWSERBASE_PROJECT_ID")
+        model_key = os.environ.get("MODEL_API_KEY")
         
-        api_token = os.environ.get("APIFY_API_TOKEN")
-        if not api_token:
-            raise HTTPException(status_code=500, detail="APIFY_API_TOKEN not configured")
-        
-        client = ApifyClient(api_token)
-        
-        all_jobs = []
-        
-        # Search for each company-role combination
-        for company in request.companies[:5]:  # Limit to 5 companies
-            for role in request.roles[:5]:  # Limit to 5 roles
-                search_query = f"{role} at {company}"
-                
-                try:
-                    # Run the LinkedIn Jobs Scraper actor
-                    run_input = {
-                        "keywords": search_query,
-                        "location": "United States",
-                        "maxRows": min(5, request.max_results),
-                        "startPage": 1,
-                    }
-                    
-                    # Use the LinkedIn Jobs Scraper actor
-                    run = client.actor("curious_coder/linkedin-jobs-scraper").call(
-                        run_input=run_input,
-                        timeout_secs=120
-                    )
-                    
-                    # Get results from the dataset
-                    for item in client.dataset(run["defaultDatasetId"]).iterate_items():
-                        all_jobs.append({
-                            "id": item.get("jobId", str(hash(item.get("title", "")))[:9]),
-                            "company": item.get("companyName", company),
-                            "role": item.get("title", role),
-                            "location": item.get("location", "United States"),
-                            "type": item.get("contractType", "Full-time"),
-                            "summarizedJD": item.get("description", "")[:300] + "...",
-                            "postedDate": item.get("postedTime", "Recently"),
-                            "salary": item.get("salaryInfo"),
-                            "url": item.get("jobUrl"),
-                        })
-                        
-                except Exception as e:
-                    print(f"Error searching for '{search_query}': {e}")
-                    # Continue with other searches even if one fails
-                    continue
-        
-        # Filter jobs to only include those from requested companies
-        # LinkedIn scraper returns keyword matches, so we need to verify company names
-        requested_companies_lower = [c.lower().strip() for c in request.companies]
-        
-        filtered_jobs = []
-        for job in all_jobs:
-            job_company = job.get("company", "").lower().strip()
-            # Check if job's company matches any of the requested companies
-            # Using partial match to handle variations like "Anthropic" vs "Anthropic, Inc."
-            is_match = any(
-                req_company in job_company or job_company in req_company
-                for req_company in requested_companies_lower
+        if not all([browserbase_key, browserbase_project, model_key]):
+            raise HTTPException(
+                status_code=500, 
+                detail="BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID, and MODEL_API_KEY required"
             )
-            if is_match:
-                filtered_jobs.append(job)
         
-        # Remove duplicates by job ID
-        seen_ids = set()
-        unique_jobs = []
-        for job in filtered_jobs:
-            if job["id"] not in seen_ids:
-                seen_ids.add(job["id"])
-                unique_jobs.append(job)
+        # Import the job scraper module
+        from browserbase_jobs import search_jobs
         
-        return unique_jobs[:request.max_results]
+        try:
+            # Search for jobs using Browserbase
+            jobs = await search_jobs(
+                companies=request.companies[:5],  # Limit to 5 companies
+                roles=request.roles[:3],  # Limit to 3 roles
+                max_results=request.max_results,
+                browserbase_api_key=browserbase_key,
+                browserbase_project_id=browserbase_project,
+                model_api_key=model_key
+            )
+            
+            return jobs
+            
+        except Exception as e:
+            print(f"Error in job discovery: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
     
     # =========================================
     # ENDPOINT: CONTACT SEARCH (Hunter.io)
@@ -437,49 +395,34 @@ def api():
             """
             Search for job postings at specific companies for specific roles.
             Use this FIRST when the user wants to find jobs.
+            
+            Visits company career pages directly using Browserbase.
             """
-            from apify_client import ApifyClient
+            import asyncio
+            from browserbase_jobs import search_jobs
             
-            api_token = os.environ.get("APIFY_API_TOKEN")
-            if not api_token:
-                return json.dumps({"error": "APIFY_API_TOKEN not configured"})
+            # Check for required credentials
+            browserbase_key = os.environ.get("BROWSERBASE_API_KEY")
+            browserbase_project = os.environ.get("BROWSERBASE_PROJECT_ID")
+            model_key = os.environ.get("MODEL_API_KEY")
             
-            client = ApifyClient(api_token)
-            all_jobs = []
+            if not all([browserbase_key, browserbase_project, model_key]):
+                return json.dumps({"error": "Browserbase credentials not configured"})
             
-            for company in companies[:3]:
-                for role in roles[:2]:
-                    search_query = f"{role} at {company}"
-                    try:
-                        run_input = {
-                            "keywords": search_query,
-                            "location": "United States",
-                            "maxRows": min(5, max_results),
-                            "startPage": 1,
-                        }
-                        run = client.actor("curious_coder/linkedin-jobs-scraper").call(
-                            run_input=run_input, timeout_secs=120
-                        )
-                        for item in client.dataset(run["defaultDatasetId"]).iterate_items():
-                            all_jobs.append({
-                                "id": item.get("jobId", str(hash(item.get("title", "")))[:9]),
-                                "company": item.get("companyName", company),
-                                "role": item.get("title", role),
-                                "location": item.get("location", "United States"),
-                                "type": item.get("contractType", "Full-time"),
-                                "summarizedJD": (item.get("description", "") or "")[:300] + "...",
-                                "postedDate": item.get("postedTime", "Recently"),
-                                "url": item.get("jobUrl"),
-                            })
-                    except Exception as e:
-                        print(f"Error: {e}")
-            
-            # Filter and dedupe
-            requested_lower = [c.lower() for c in companies]
-            filtered = [j for j in all_jobs if any(req in j["company"].lower() for req in requested_lower)]
-            seen = set()
-            unique = [j for j in filtered if not (j["id"] in seen or seen.add(j["id"]))]
-            return json.dumps(unique[:max_results])
+            try:
+                # Run the async search function
+                jobs = asyncio.run(search_jobs(
+                    companies=companies[:3],  # Limit for speed
+                    roles=roles[:2],
+                    max_results=max_results,
+                    browserbase_api_key=browserbase_key,
+                    browserbase_project_id=browserbase_project,
+                    model_api_key=model_key
+                ))
+                return json.dumps(jobs)
+            except Exception as e:
+                print(f"Error in discover_jobs_tool: {e}")
+                return json.dumps({"error": str(e)})
         
         @tool
         def find_contacts_tool(companies: list[str]) -> str:
@@ -540,7 +483,7 @@ def api():
                 return json.dumps({"error": "GOOGLE_API_KEY, GEMINI_API_KEY, or MODEL_API_KEY not configured"})
             
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel("gemini-2.0-flash")
+            model = genai.GenerativeModel("gemini-3-flash-preview")
             
             prompt = f"""Draft a short outreach email (under 100 words).
 TO: {contact_name} ({contact_title}) at {company}
@@ -575,7 +518,7 @@ Respond with ONLY valid JSON in this exact format:
         if not gemini_key:
             raise HTTPException(status_code=500, detail="GOOGLE_API_KEY, GEMINI_API_KEY, or MODEL_API_KEY not configured in Modal secrets")
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",
+            model="gemini-3-flash-preview",
             google_api_key=gemini_key,
             temperature=0,
         ).bind_tools(tools_list)

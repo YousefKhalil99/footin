@@ -14,13 +14,9 @@ function normalizeSession(result: SessionResult) {
 
 // GET /api/jobs - Fetch existing jobs from database
 export const GET: RequestHandler = async ({ request, url }) => {
-	const sessionResult = await auth.api.getSession({ headers: request.headers });
-	const session = normalizeSession(sessionResult);
-	const userId = session?.user?.id;
+	// DEMO MODE: Bypass auth
+	const userId = "00000000-0000-0000-0000-000000000000"; // Static Demo User ID
 
-	if (!userId) {
-		return json({ error: "Unauthorized" }, { status: 401 });
-	}
 
 	// Optional filters from query params
 	const keywords = url.searchParams.getAll("keyword");

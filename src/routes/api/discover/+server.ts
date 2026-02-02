@@ -3,41 +3,20 @@ import type { RequestHandler } from "./$types";
 import { auth } from "$lib/auth";
 import { pool } from "$lib/db";
 import { env } from "$env/dynamic/private";
-import { ApifyClient } from "apify-client";
 
-type ApifyInput = {
-	enrichCompanyData?: boolean;
-	keyword: string[];
+/**
+ * Job data returned from the Modal agent's Browserbase scraper.
+ * These are the fields we receive after the agent visits company career pages.
+ */
+type JobItem = {
+	id?: string;
+	company?: string;
+	role?: string;
 	location?: string;
-	publishedAt?: string;
-	saveOnlyUniqueItems?: boolean;
-	startUrls?: Array<{ url: string }>;
-	maxItems?: number;
-};
-
-type ApifyItem = {
-	jobId?: string;
-	jobTitle?: string;
-	location?: string;
-	salaryInfo?: string;
-	postedTime?: string;
-	publishedAt?: string;
-	searchString?: string;
-	jobUrl?: string;
-	companyName?: string;
-	companyUrl?: string;
-	companyLogo?: string;
-	jobDescription?: string;
-	applicationsCount?: number;
-	contractType?: string;
-	experienceLevel?: string;
-	workType?: string;
-	sector?: string;
-	posterFullName?: string;
-	posterProfileUrl?: string;
-	companyId?: string;
-	applyUrl?: string;
-	applyType?: string;
+	type?: string;
+	summarizedJD?: string;
+	postedDate?: string;
+	url?: string;
 	[key: string]: unknown;
 };
 
@@ -53,25 +32,21 @@ function normalizeSession(result: SessionResult) {
 	return result;
 }
 
-function buildLinkedInSearchUrl(keyword: string, location?: string, publishedAt?: string) {
-	const params = new URLSearchParams();
-	if (keyword) params.set("keywords", keyword);
-	if (publishedAt) params.set("f_TPR", publishedAt);
-	if (location) params.set("location", location);
-
-	const query = params.toString();
-	return `https://www.linkedin.com/jobs/search/?${query}`;
-}
-
-async function upsertJobs(userId: string, items: ApifyItem[], searchParams: ApifyInput) {
+/**
+ * Insert or update jobs in the database from Modal agent results.
+ * 
+ * The Modal agent's Browserbase scraper returns simplified job data,
+ * so we map it to our database schema here.
+ */
+async function upsertJobs(userId: string, items: JobItem[], searchKeywords: string[]) {
 	if (!items.length) {
 		return { count: 0, jobs: [] as any[] };
 	}
 
-	// Deduplicate items by job_url to avoid "ON CONFLICT cannot affect row a second time" error
+	// Deduplicate items by URL to avoid conflicts
 	const seenUrls = new Set<string>();
 	const uniqueItems = items.filter(item => {
-		const url = item.jobUrl;
+		const url = item.url;
 		if (!url || seenUrls.has(url)) {
 			return false;
 		}
@@ -83,31 +58,19 @@ async function upsertJobs(userId: string, items: ApifyItem[], searchParams: Apif
 		return { count: 0, jobs: [] as any[] };
 	}
 
+	// Simplified fields for Browserbase job data
 	const fields = [
 		"user_id",
 		"source",
 		"job_id",
 		"job_title",
 		"location",
-		"salary_info",
-		"posted_time",
-		"published_at",
-		"search_string",
 		"job_url",
 		"company_name",
-		"company_url",
-		"company_logo",
 		"job_description",
-		"applications_count",
 		"contract_type",
-		"experience_level",
-		"work_type",
-		"sector",
-		"poster_full_name",
-		"poster_profile_url",
-		"company_id",
+		"posted_time",
 		"apply_url",
-		"apply_type",
 		"raw",
 		"search_params"
 	];
@@ -115,47 +78,27 @@ async function upsertJobs(userId: string, items: ApifyItem[], searchParams: Apif
 	const values: unknown[] = [];
 	const placeholders: string[] = [];
 
+	// Helper to convert empty strings to null
+	const toNullableString = (val: unknown): string | null => {
+		if (val === null || val === undefined || val === "") return null;
+		return String(val);
+	};
+
 	uniqueItems.forEach((item) => {
-		// Helper to convert empty strings to null
-		const toNullableString = (val: unknown): string | null => {
-			if (val === null || val === undefined || val === "") return null;
-			return String(val);
-		};
-
-		// Helper to convert to integer or null
-		const toNullableInt = (val: unknown): number | null => {
-			if (val === null || val === undefined || val === "") return null;
-			const num = Number(val);
-			return isNaN(num) ? null : Math.floor(num);
-		};
-
 		const row = [
 			userId,
-			"apify-linkedin",
-			toNullableString(item.jobId),
-			item.jobTitle || "Unknown role",
+			"browserbase-careers",  // Updated source
+			toNullableString(item.id),
+			item.role || "Unknown role",
 			toNullableString(item.location),
-			toNullableString(item.salaryInfo),
-			toNullableString(item.postedTime),
-			toNullableString(item.publishedAt),
-			toNullableString(item.searchString),
-			toNullableString(item.jobUrl),
-			toNullableString(item.companyName),
-			toNullableString(item.companyUrl),
-			toNullableString(item.companyLogo),
-			toNullableString(item.jobDescription),
-			toNullableInt(item.applicationsCount),
-			toNullableString(item.contractType),
-			toNullableString(item.experienceLevel),
-			toNullableString(item.workType),
-			toNullableString(item.sector),
-			toNullableString(item.posterFullName),
-			toNullableString(item.posterProfileUrl),
-			toNullableString(item.companyId),
-			toNullableString(item.applyUrl),
-			toNullableString(item.applyType),
+			toNullableString(item.url),
+			toNullableString(item.company),
+			toNullableString(item.summarizedJD),
+			toNullableString(item.type),
+			toNullableString(item.postedDate),
+			toNullableString(item.url),  // apply_url same as url
 			JSON.stringify(item),
-			JSON.stringify(searchParams)
+			JSON.stringify({ keywords: searchKeywords })
 		];
 
 		const baseIndex = values.length;
@@ -172,28 +115,15 @@ async function upsertJobs(userId: string, items: ApifyItem[], searchParams: Apif
 			job_id = EXCLUDED.job_id,
 			job_title = EXCLUDED.job_title,
 			location = EXCLUDED.location,
-			salary_info = EXCLUDED.salary_info,
-			posted_time = EXCLUDED.posted_time,
-			published_at = EXCLUDED.published_at,
-			search_string = EXCLUDED.search_string,
 			company_name = EXCLUDED.company_name,
-			company_url = EXCLUDED.company_url,
-			company_logo = EXCLUDED.company_logo,
 			job_description = EXCLUDED.job_description,
-			applications_count = EXCLUDED.applications_count,
 			contract_type = EXCLUDED.contract_type,
-			experience_level = EXCLUDED.experience_level,
-			work_type = EXCLUDED.work_type,
-			sector = EXCLUDED.sector,
-			poster_full_name = EXCLUDED.poster_full_name,
-			poster_profile_url = EXCLUDED.poster_profile_url,
-			company_id = EXCLUDED.company_id,
+			posted_time = EXCLUDED.posted_time,
 			apply_url = EXCLUDED.apply_url,
-			apply_type = EXCLUDED.apply_type,
 			raw = EXCLUDED.raw,
 			search_params = EXCLUDED.search_params,
 			updated_at = NOW()
-		RETURNING id, job_title as title, company_name, location, job_url, apply_url, published_at, job_description as description
+		RETURNING id, job_title as title, company_name, location, job_url, apply_url, job_description as description
 	`;
 
 	const client = await pool.connect();
@@ -212,13 +142,9 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ error: "MODAL_AGENT_URL is not configured" }, { status: 500 });
 	}
 
-	const sessionResult = await auth.api.getSession({ headers: request.headers });
-	const session = normalizeSession(sessionResult);
-	const userId = session?.user?.id;
+	// DEMO MODE: Bypass auth
+	const userId = "00000000-0000-0000-0000-000000000000"; // Static Demo User ID
 
-	if (!userId) {
-		return json({ error: "Unauthorized" }, { status: 401 });
-	}
 
 	let body: any;
 	try {
@@ -227,23 +153,28 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ error: "Invalid JSON body" }, { status: 400 });
 	}
 
-	const keywords = Array.isArray(body?.keyword)
-		? body.keyword.filter((value: any) => typeof value === "string" && value.trim())
-		: [];
+	const companies = Array.isArray(body?.companies) ? body.companies : [];
+	const roles = Array.isArray(body?.roles) ? body.roles : [];
 
-	if (!keywords.length) {
-		return json({ error: "keyword is required" }, { status: 400 });
+	// Legacy support: if only keyword provided, treat as search terms
+	if (!companies.length && !roles.length && body?.keyword) {
+		// Just pass keywords as roles for now if no structure
+		const keywords = Array.isArray(body.keyword) ? body.keyword : [];
+		roles.push(...keywords);
+	}
+
+	if (!companies.length) {
+		return json({ error: "At least one target company is required" }, { status: 400 });
 	}
 
 	try {
 		// Call Modal agent for discovery
-		// Note: we're passing companies=[] for now as keywords are role titles
 		const response = await fetch(`${modalUrl}/discover`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
-				companies: [], // TODO: extract companies from keywords or separate field
-				roles: keywords,
+				companies: companies,
+				roles: roles.length ? roles : ["Open Role"], // Default if no role specified
 				max_results: 20
 			})
 		});
@@ -256,9 +187,10 @@ export const POST: RequestHandler = async ({ request }) => {
 
 		const items = await response.json();
 
-		const upserted = await upsertJobs(userId, items as any[], {
-			keyword: keywords
-		} as any);
+		// Use roles as keywords for storage
+		const searchKeywords = roles.length ? roles : ["Open Role"];
+
+		const upserted = await upsertJobs(userId, items as JobItem[], searchKeywords);
 
 		return json({
 			inserted: upserted.count,

@@ -56,7 +56,7 @@
     const canSearchLocal = $derived(companies.length > 0 && roles.length > 0);
 
     // Check if we should use mock data (default to true for development)
-    const useMockData = env.PUBLIC_USE_MOCK_DATA !== "false";
+    const useMockData = false; // Forced to false for real production demo
 
     // Auth state
     let session = $state<any>(null);
@@ -390,31 +390,9 @@ Best regards`;
         </div>
         <p class="tagline">AI-Powered Job Outreach Automation</p>
         <div class="header-actions">
-            {#if isAuthLoading}
-                <span class="user-info">Loading...</span>
-            {:else if session?.user}
-                <span class="user-info"
-                    >Welcome, {session.user.name || session.user.email}</span
-                >
-                <Button variant="secondary" onclick={handleSignOut}>
-                    Sign Out
-                </Button>
-            {:else}
-                <Button
-                    variant="secondary"
-                    onclick={handleSignIn}
-                    disabled={isAuthLoading}
-                >
-                    Sign In
-                </Button>
-                <Button
-                    variant="primary"
-                    onclick={handleSignUp}
-                    disabled={isAuthLoading}
-                >
-                    Sign Up
-                </Button>
-            {/if}
+            <div class="header-actions">
+                <!-- Auth removed for public demo -->
+            </div>
         </div>
     </header>
 
